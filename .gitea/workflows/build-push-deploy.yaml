@@ -8,6 +8,8 @@ on:
 jobs:
   build-push-deploy:
     runs-on: ubuntu-latest
+    env:
+      WORKSPACE_DIR: ${{ github.workspace }}
     steps:
       # Step 1: Checkout code
       - name: Checkout code
@@ -48,22 +50,27 @@ jobs:
           docker push ${IMAGE_NAME}:${{ gitea.sha }}
           echo "✓ Image pushed successfully"
 
-      # Step 6: Install Syft for SBOM
-      - name: Install Syft
+      # Step 6: Generate SBOM using Syft container
+      - name: Generate SBOM with Syft Container
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          syft version
+          echo "Using workspace: $WORKSPACE_DIR"
+          
+          # Run Syft to scan the Docker image and output SBOM files
+          docker run --rm \
+            --user $(id -u):$(id -g) \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$WORKSPACE_DIR:/output" \
+            -w /output \
+            anchore/syft:latest \
+            "${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest" \
+            -o spdx-json=/output/sbom.json \
+            -o cyclonedx-json=/output/sbom-cyclonedx.json
+          
+          echo "✓ SBOM generated using containerized Syft"
+          echo "Checking for SBOM files in workspace..."
+          ls -lh sbom*.json || echo "ERROR: SBOM files not found!"
 
-      # Step 7: Generate SBOM
-      - name: Generate SBOM
-        run: |
-          syft "${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest" \
-            --output spdx-json=sbom.json \
-            --output cyclonedx-json=sbom-cyclonedx.json
-          echo "✓ SBOM generated"
-          ls -lh sbom*.json
-
-      # Step 8: Upload SBOM to Concert (Optional)
+      # Step 7: Upload SBOM to Concert (Optional)
       - name: Upload SBOM to Concert
         if: secrets.CONCERT_URL != ''
         continue-on-error: true
@@ -76,7 +83,7 @@ jobs:
           pip install requests
           python scripts/upload-sbom-to-concert.py sbom.json --application-id "${CONCERT_APPLICATION_ID}" || echo "⚠ Concert upload skipped"
 
-      # Step 9: Upload SBOM Artifacts (using v3 for Gitea compatibility)
+      # Step 8: Upload SBOM Artifacts (using v3 for Gitea compatibility)
       - name: Upload SBOM Artifacts
         uses: actions/upload-artifact@v3
         with:
@@ -86,33 +93,39 @@ jobs:
             sbom-cyclonedx.json
           retention-days: 90
 
-      # Step 10: Install kubectl
-      - name: Install kubectl
+      # Step 9: Deploy Application
+      - name: Deploy Application with kubectl Container
         run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          mv kubectl /usr/local/bin/
-          kubectl version --client
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            PLAIN_CONFIG=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d)
+          else
+            PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
+          fi
 
-      # Step 11: Setup kubeconfig
-      - name: Setup kubeconfig
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
+          cat $WORKSPACE_DIR/k8s/deployment.yaml | docker run --rm -i \
+            --entrypoint sh \
+            -e KUBECONFIG_DATA="$PLAIN_CONFIG" \
+            bitnami/kubectl:latest \
+            -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
+          
+          docker run --rm \
+            --entrypoint sh \
+            -e KUBECONFIG_DATA="$PLAIN_CONFIG" \
+            bitnami/kubectl:latest \
+            -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig rollout status deployment/hello-world-python -n default --timeout=5m'
+          
+          echo "✓ Application deployed using containerized kubectl"
 
-      # Step 12: Deploy Application
-      - name: Deploy Application
-        run: |
-          kubectl apply -f k8s/deployment.yaml
-          kubectl rollout status deployment/hello-world-python -n default --timeout=5m
-          echo "✓ Application deployed"
-
-      # Step 13: Create TLS Certificate
+      # Step 10: Create TLS Certificate
       - name: Create TLS Certificate
         run: |
-          # Check if TLS secret already exists
-          if kubectl get secret hello-world-python-tls -n default &> /dev/null; then
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            PLAIN_CONFIG=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d)
+          else
+            PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
+          fi
+
+          if docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get secret hello-world-python-tls -n default' &> /dev/null; then
             echo "✓ TLS secret already exists"
           else
             echo "Creating self-signed TLS certificate..."
@@ -120,80 +133,111 @@ jobs:
               -keyout tls.key -out tls.crt \
               -subj "/CN=hello-world-python.lab.allwaysbeginner.com/O=IBM Bob Secure Development" \
               2>/dev/null
-            
-            kubectl create secret tls hello-world-python-tls \
-              --cert=tls.crt \
-              --key=tls.key \
-              --namespace=default
-            
+
+            TLS_CRT=$(base64 -w 0 < tls.crt)
+            TLS_KEY=$(base64 -w 0 < tls.key)
+
+            MANIFEST=$(cat <<EOFCERT
+          apiVersion: v1
+          kind: Secret
+          type: kubernetes.io/tls
+          metadata:
+            name: hello-world-python-tls
+            namespace: default
+          data:
+            tls.crt: ${TLS_CRT}
+            tls.key: ${TLS_KEY}
+          EOFCERT
+          )
+
+            echo "$MANIFEST" | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
+
             rm -f tls.key tls.crt
-            echo "✓ TLS certificate created"
+            echo "✓ TLS certificate created using containerized kubectl"
           fi
 
-      # Step 14: Deploy Ingress
+      # Step 11: Deploy Secure Ingress
       - name: Deploy Secure Ingress
         run: |
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: hello-world-python-ingress
-            namespace: default
-            annotations:
-              kubernetes.io/ingress.class: traefik
-              traefik.ingress.kubernetes.io/router.tls: "true"
-          spec:
-            tls:
-            - hosts:
-              - hello-world-python.lab.allwaysbeginner.com
-              secretName: hello-world-python-tls
-            rules:
-            - host: hello-world-python.lab.allwaysbeginner.com
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: hello-world-python
-                      port:
-                        number: 80
-          EOF
-          echo "✓ Ingress deployed"
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            PLAIN_CONFIG=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d)
+          else
+            PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
+          fi
+          
+          cat <<'EOFINGRESS' | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: hello-world-python-ingress
+              namespace: default
+              annotations:
+                kubernetes.io/ingress.class: traefik
+                traefik.ingress.kubernetes.io/router.tls: "true"
+            spec:
+              tls:
+              - hosts:
+                - hello-world-python.lab.allwaysbeginner.com
+                secretName: hello-world-python-tls
+              rules:
+              - host: hello-world-python.lab.allwaysbeginner.com
+                http:
+                  paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: hello-world-python
+                        port:
+                          number: 80
+          EOFINGRESS
+          echo "✓ Ingress deployed using containerized kubectl"
 
-      # Step 15: Apply Permissive Network Policy
+      # Step 12: Apply Permissive Network Policy
       - name: Apply Permissive Network Policy
         run: |
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: NetworkPolicy
-          metadata:
-            name: hello-world-python-netpol
-            namespace: default
-          spec:
-            podSelector:
-              matchLabels:
-                app: hello-world-python
-            policyTypes:
-            - Ingress
-            - Egress
-            ingress:
-            - {}  # Allow all ingress (including from Traefik)
-            egress:
-            - {}  # Allow all egress
-          EOF
-          echo "✓ Permissive network policy applied"
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            PLAIN_CONFIG=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d)
+          else
+            PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
+          fi
+          
+          cat <<'EOFNETPOL' | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: hello-world-python-netpol
+              namespace: default
+            spec:
+              podSelector:
+                matchLabels:
+                  app: hello-world-python
+              policyTypes:
+              - Ingress
+              - Egress
+              ingress:
+              - {}
+              egress:
+              - {}
+          EOFNETPOL
+          echo "✓ Permissive network policy applied using containerized kubectl"
 
-      # Step 16: Get Deployment Info
+      # Step 13: Get Deployment Info
       - name: Get Deployment Info
         run: |
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            PLAIN_CONFIG=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d)
+          else
+            PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
+          fi
+          
           echo "==================================="
           echo "Deployment Information"
           echo "==================================="
-          kubectl get deployment hello-world-python -n default
-          kubectl get pods -l app=hello-world-python -n default
-          kubectl get service hello-world-python -n default
-          kubectl get ingress hello-world-python-ingress -n default
+          docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get deployment hello-world-python -n default'
+          docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get pods -l app=hello-world-python -n default'
+          docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get service hello-world-python -n default'
+          docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get ingress hello-world-python-ingress -n default'
           echo ""
           echo "🔒 Secure Access:"
           echo "  URL: https://hello-world-python.lab.allwaysbeginner.com"

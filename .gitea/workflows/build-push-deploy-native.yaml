@@ -1,0 +1,216 @@
+name: Build, Push and Deploy (Native)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    env:
+      WORKSPACE_DIR: ${{ github.workspace }}
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Verify Docker is available
+      - name: Verify Docker
+        run: |
+          docker --version
+          docker info
+          echo "✓ Docker is available"
+
+      # Step 3: Verify kubectl is available
+      - name: Verify kubectl
+        run: |
+          kubectl version --client
+          echo "✓ kubectl is available"
+
+      # Step 4: Login to Registry
+      - name: Login to Gitea Registry
+        run: |
+          echo "${{ secrets.GIT_TOKEN }}" | docker login ${{ secrets.GIT_REGISTRY }} \
+            --username ${{ secrets.GIT_USERNAME }} \
+            --password-stdin
+          echo "✓ Logged in to registry"
+
+      # Step 5: Build and Push Docker Image
+      - name: Build and Push
+        run: |
+          IMAGE_NAME="${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}"
+          docker build -t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:${{ gitea.sha }} .
+          docker push ${IMAGE_NAME}:latest
+          docker push ${IMAGE_NAME}:${{ gitea.sha }}
+          echo "✓ Image pushed successfully"
+
+      # Step 6: Generate SBOM using Syft
+      - name: Generate SBOM with Syft
+        run: |
+          # Check if syft is installed, if not use container
+          if command -v syft &> /dev/null; then
+            syft "${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest" \
+              -o spdx-json=sbom.json \
+              -o cyclonedx-json=sbom-cyclonedx.json
+          else
+            echo "Syft not installed, using container..."
+            docker run --rm \
+              --user $(id -u):$(id -g) \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$WORKSPACE_DIR:/output" \
+              -w /output \
+              anchore/syft:latest \
+              "${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest" \
+              -o spdx-json=/output/sbom.json \
+              -o cyclonedx-json=/output/sbom-cyclonedx.json
+          fi
+          
+          echo "✓ SBOM generated"
+          ls -lh sbom*.json
+
+      # Step 7: Upload SBOM to Concert (Optional)
+      - name: Upload SBOM to Concert
+        if: secrets.CONCERT_URL != ''
+        continue-on-error: true
+        env:
+          CONCERT_URL: ${{ secrets.CONCERT_URL }}
+          CONCERT_API_KEY: ${{ secrets.CONCERT_API_KEY }}
+          CONCERT_INSTANCE_ID: ${{ secrets.CONCERT_INSTANCE_ID }}
+          CONCERT_APPLICATION_ID: ${{ secrets.CONCERT_APPLICATION_ID }}
+        run: |
+          pip install requests
+          python scripts/upload-sbom-to-concert.py sbom.json --application-id "${CONCERT_APPLICATION_ID}" || echo "⚠ Concert upload skipped"
+
+      # Step 8: Upload SBOM Artifacts
+      - name: Upload SBOM Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom-files
+          path: |
+            sbom.json
+            sbom-cyclonedx.json
+          retention-days: 90
+
+      # Step 9: Setup kubeconfig
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          
+          # Decode kubeconfig if base64, otherwise use as-is
+          if echo "${{ secrets.KUBECONFIG }}" | base64 -d > /dev/null 2>&1; then
+            echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+            echo "✓ Decoded base64 kubeconfig"
+          else
+            echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
+            echo "✓ Used plain text kubeconfig"
+          fi
+          
+          chmod 600 $HOME/.kube/config
+          
+          # Verify kubectl can connect
+          kubectl cluster-info
+          echo "✓ kubectl configured and connected"
+
+      # Step 10: Deploy Application
+      - name: Deploy Application
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl rollout status deployment/hello-world-python -n default --timeout=5m
+          echo "✓ Application deployed"
+
+      # Step 11: Create TLS Certificate
+      - name: Create TLS Certificate
+        run: |
+          if kubectl get secret hello-world-python-tls -n default &> /dev/null; then
+            echo "✓ TLS secret already exists"
+          else
+            echo "Creating self-signed TLS certificate..."
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+              -keyout tls.key -out tls.crt \
+              -subj "/CN=hello-world-python.lab.allwaysbeginner.com/O=IBM Bob Secure Development" \
+              2>/dev/null
+            
+            # Create Kubernetes TLS secret
+            kubectl create secret tls hello-world-python-tls \
+              --cert=tls.crt \
+              --key=tls.key \
+              -n default
+            
+            rm -f tls.key tls.crt
+            echo "✓ TLS certificate created"
+          fi
+
+      # Step 12: Deploy Secure Ingress
+      - name: Deploy Secure Ingress
+        run: |
+          cat <<'EOFINGRESS' | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: hello-world-python-ingress
+            namespace: default
+            annotations:
+              kubernetes.io/ingress.class: traefik
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            tls:
+            - hosts:
+              - hello-world-python.lab.allwaysbeginner.com
+              secretName: hello-world-python-tls
+            rules:
+            - host: hello-world-python.lab.allwaysbeginner.com
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: hello-world-python
+                      port:
+                        number: 80
+          EOFINGRESS
+          echo "✓ Ingress deployed"
+
+      # Step 13: Apply Permissive Network Policy
+      - name: Apply Permissive Network Policy
+        run: |
+          cat <<'EOFNETPOL' | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: hello-world-python-netpol
+            namespace: default
+          spec:
+            podSelector:
+              matchLabels:
+                app: hello-world-python
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - {}
+            egress:
+            - {}
+          EOFNETPOL
+          echo "✓ Network policy applied"
+
+      # Step 14: Get Deployment Info
+      - name: Get Deployment Info
+        run: |
+          echo "==================================="
+          echo "Deployment Information"
+          echo "==================================="
+          kubectl get deployment hello-world-python -n default
+          kubectl get pods -l app=hello-world-python -n default
+          kubectl get service hello-world-python -n default
+          kubectl get ingress hello-world-python-ingress -n default
+          echo ""
+          echo "🔒 Secure Access:"
+          echo "  URL: https://hello-world-python.lab.allwaysbeginner.com"
+          echo ""
+          echo "📋 Add to /etc/hosts on your machine:"
+          echo "  <K3S_IP>  hello-world-python.lab.allwaysbeginner.com"
+          echo "==================================="
+
+# Made with Bob

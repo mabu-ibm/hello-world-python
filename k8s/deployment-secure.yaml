@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-world-python
+  template:
+    metadata:
+      labels:
+        app: hello-world-python
+        version: v1
+    spec:
+      # Security: Use specific service account
+      serviceAccountName: hello-world-python
+      
+      # Security: Don't mount service account token automatically
+      automountServiceAccountToken: false
+      
+      # Pull image from Gitea registry
+      imagePullSecrets:
+      - name: gitea-registry
+      
+      # Security: Pod-level security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: hello-world-python
+        image: almabuild.lab.allwaysbeginner.com:3000/manfred/hello-world-python:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Security: Container-level security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        
+        # Liveness probe
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Readiness probe
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Startup probe (for slow-starting apps)
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+        
+        # Resource limits (prevent resource exhaustion attacks)
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+            ephemeral-storage: "100Mi"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+            ephemeral-storage: "200Mi"
+        
+        # Environment variables from ConfigMap and Secrets
+        envFrom:
+        - configMapRef:
+            name: hello-world-python-config
+        - secretRef:
+            name: hello-world-python-secrets
+            optional: true
+        
+        # Volume mounts for writable directories
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /home/appuser/.cache
+      
+      # Volumes for writable directories (since root is read-only)
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 100Mi
+      - name: cache
+        emptyDir:
+          sizeLimit: 100Mi
+      
+      # Security: Pod anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - hello-world-python
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hello-world-python-config
+  namespace: default
+  labels:
+    app: hello-world-python
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+  # Add more non-sensitive config here
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hello-world-python-secrets
+  namespace: default
+  labels:
+    app: hello-world-python
+type: Opaque
+stringData:
+  # Add sensitive data here
+  # Example: API_KEY: "your-secret-key"
+  PLACEHOLDER: "replace-with-actual-secrets"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+spec:
+  type: ClusterIP  # Changed from LoadBalancer for security
+  selector:
+    app: hello-world-python
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  sessionAffinity: None
+
+# Made with Bob

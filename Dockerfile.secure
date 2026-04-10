@@ -1,0 +1,66 @@
+# Multi-stage build for smaller, more secure image
+FROM python:3.11-slim as builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install dependencies
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Final stage - Use hardened slim image
+FROM python:3.11-slim
+
+# Install security updates and minimal tools
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        dumb-init && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Create non-root user with specific UID/GID for security
+RUN groupadd -r -g 1000 appuser && \
+    useradd -r -u 1000 -g appuser -m -s /sbin/nologin -c "Application User" appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy Python dependencies from builder
+COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+
+# Copy application code
+COPY --chown=appuser:appuser app.py .
+
+# Remove write permissions from app directory for security
+RUN chmod -R 555 /app && \
+    chmod -R 755 /home/appuser/.local
+
+# Create directories for writable content (required for read-only root filesystem)
+RUN mkdir -p /tmp /home/appuser/.cache && \
+    chown -R appuser:appuser /tmp /home/appuser/.cache && \
+    chmod 1777 /tmp
+
+# Switch to non-root user
+USER 1000:1000
+
+# Add local bin to PATH
+ENV PATH=/home/appuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+
+# Run application with gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "2", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-", "app:app"]

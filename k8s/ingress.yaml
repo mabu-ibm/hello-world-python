@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-world-python
+  namespace: apps
+  labels:
+    app: hello-world-python
+  annotations:
+    # Traefik annotations (K3s default)
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Nginx annotations (if using nginx-ingress)
+    # nginx.ingress.kubernetes.io/rewrite-target: /
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: traefik  # Change to 'nginx' if using nginx-ingress
+  rules:
+  - host: hello-world-python.local  # Change to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: hello-world-python
+            port:
+              number: 80
+  # Optional: TLS configuration
+  # tls:
+  # - hosts:
+  #   - hello-world-python.local
+  #   secretName: hello-world-python-tls
+
+# Made with Bob

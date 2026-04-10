@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-world-python
+  template:
+    metadata:
+      labels:
+        app: hello-world-python
+    spec:
+      # Pull image from Gitea registry
+      imagePullSecrets:
+      - name: gitea-registry
+      
+      containers:
+      - name: hello-world-python
+        image: almabuild.lab.allwaysbeginner.com:3000/manfred/hello-world-python:latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Liveness probe - checks if app is alive
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - checks if app is ready to serve traffic
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Resource limits
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Environment variables (if needed)
+        env:
+        - name: APP_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+spec:
+  type: NodePort
+  selector:
+    app: hello-world-python
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    nodePort: 30080
+    protocol: TCP
+  
+  # Session affinity (optional)
+  sessionAffinity: None
+
+---
+# Optional: Ingress for external access
+# Uncomment if you have an ingress controller installed
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: hello-world-python
+#   namespace: default
+#   annotations:
+#     kubernetes.io/ingress.class: "traefik"
+# spec:
+#   rules:
+#   - host: hello.lab.allwaysbeginner.com
+#     http:
+#       paths:
+#       - path: /
+#         pathType: Prefix
+#         backend:
+#           service:
+#             name: hello-world-python
+#             port:
+#               number: 80
+
+# Made with Bob

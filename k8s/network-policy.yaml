@@ -1,0 +1,57 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hello-world-python-netpol
+  namespace: default
+  labels:
+    app: hello-world-python
+spec:
+  podSelector:
+    matchLabels:
+      app: hello-world-python
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  # Permissive ingress - allows all traffic including from Traefik
+  ingress:
+  - {}
+  
+  # Permissive egress - allows all outbound traffic
+  egress:
+  - {}
+
+# Note: This is a permissive network policy suitable for development/demo.
+# For production, consider more restrictive rules:
+#
+# ingress:
+# - from:
+#   - namespaceSelector:
+#       matchLabels:
+#         name: kube-system
+#   - podSelector:
+#       matchLabels:
+#         app.kubernetes.io/name: traefik
+#   ports:
+#   - protocol: TCP
+#     port: 8080
+#
+# egress:
+# - to:
+#   - namespaceSelector:
+#       matchLabels:
+#         kubernetes.io/metadata.name: kube-system
+#   ports:
+#   - protocol: UDP
+#     port: 53
+#   - protocol: TCP
+#     port: 53
+# - to:
+#   - namespaceSelector: {}
+#   ports:
+#   - protocol: TCP
+#     port: 443
+#   - protocol: TCP
+#     port: 80
+
+# Made with Bob

@@ -372,43 +372,16 @@ jobs:
           fi
           
           # Create daemon.json with insecure-registries
-          if [ -f "$DAEMON_JSON" ]; then
-            # File exists, try to merge
-            echo "Updating existing daemon.json..."
-            $SUDO bash -c "cat > $DAEMON_JSON" <<'DOCKEREOF' || bash -c "cat > $DAEMON_JSON" <<'DOCKEREOF'
-          {
-            "insecure-registries": ["REGISTRY_PLACEHOLDER"],
-            "log-driver": "json-file",
-            "log-opts": {
-              "max-size": "10m",
-              "max-file": "3"
-            }
-          }
-          DOCKEREOF
-            # Replace placeholder with actual registry
-            $SUDO sed -i "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" "$DAEMON_JSON" || sed -i "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" "$DAEMON_JSON"
-          else
-            # Create new file
-            echo "Creating new daemon.json..."
-            $SUDO mkdir -p /etc/docker 2>/dev/null || mkdir -p /etc/docker 2>/dev/null || true
-            $SUDO bash -c "cat > $DAEMON_JSON" <<'DOCKEREOF' || bash -c "cat > $DAEMON_JSON" <<'DOCKEREOF'
-          {
-            "insecure-registries": ["REGISTRY_PLACEHOLDER"]
-          }
-          DOCKEREOF
-            # Replace placeholder with actual registry
-            $SUDO sed -i "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" "$DAEMON_JSON" || sed -i "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" "$DAEMON_JSON"
-          fi
+          echo "Creating/updating daemon.json..."
+          $SUDO mkdir -p /etc/docker 2>/dev/null || mkdir -p /etc/docker 2>/dev/null || true
+          
+          # Create the JSON content using echo
+          $SUDO bash -c "echo '{' > $DAEMON_JSON" || bash -c "echo '{' > $DAEMON_JSON"
+          $SUDO bash -c "echo '  \"insecure-registries\": [\"${REGISTRY}\"]' >> $DAEMON_JSON" || bash -c "echo '  \"insecure-registries\": [\"${REGISTRY}\"]' >> $DAEMON_JSON"
+          $SUDO bash -c "echo '}' >> $DAEMON_JSON" || bash -c "echo '}' >> $DAEMON_JSON"
           
           echo "✓ Docker daemon.json configured"
-          
-          # Display the configuration
-          if [ -f "$DAEMON_JSON" ]; then
-            echo "Configuration content:"
-            $SUDO cat "$DAEMON_JSON" 2>/dev/null || cat "$DAEMON_JSON" 2>/dev/null || echo "Could not read daemon.json"
-          else
-            echo "⚠️  Warning: daemon.json was not created"
-          fi
+          cat "$DAEMON_JSON"
           
           # Restart Docker to apply changes
           echo "Restarting Docker daemon..."

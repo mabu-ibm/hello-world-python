@@ -348,7 +348,70 @@ jobs:
           $KUBECTL_BIN version --client
           echo "✓ kubectl is available and working"
 
-      # Step 6: Login to Registry
+      # Step 6: Configure Docker for HTTP Registry
+      - name: Configure Docker for HTTP Registry
+        run: |
+          echo "Configuring Docker to allow insecure registry..."
+          
+          # Detect if we have sudo or running as root
+          if command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          elif [ "$(id -u)" -eq 0 ]; then
+            SUDO=""
+          else
+            SUDO=""
+          fi
+          
+          # Create or update Docker daemon.json
+          DAEMON_JSON="/etc/docker/daemon.json"
+          REGISTRY="${{ secrets.GIT_REGISTRY }}"
+          
+          # Backup existing config if it exists
+          if [ -f "$DAEMON_JSON" ]; then
+            $SUDO cp "$DAEMON_JSON" "${DAEMON_JSON}.backup" 2>/dev/null || cp "$DAEMON_JSON" "${DAEMON_JSON}.backup" 2>/dev/null || true
+          fi
+          
+          # Create daemon.json with insecure-registries
+          if [ -f "$DAEMON_JSON" ]; then
+            # File exists, try to merge
+            echo "Updating existing daemon.json..."
+            $SUDO bash -c "cat > $DAEMON_JSON" <<EOF || bash -c "cat > $DAEMON_JSON" <<EOF
+{
+  "insecure-registries": ["${REGISTRY}"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+          else
+            # Create new file
+            echo "Creating new daemon.json..."
+            $SUDO mkdir -p /etc/docker 2>/dev/null || mkdir -p /etc/docker 2>/dev/null || true
+            $SUDO bash -c "cat > $DAEMON_JSON" <<EOF || bash -c "cat > $DAEMON_JSON" <<EOF
+{
+  "insecure-registries": ["${REGISTRY}"]
+}
+EOF
+          fi
+          
+          echo "✓ Docker daemon.json configured"
+          cat "$DAEMON_JSON"
+          
+          # Restart Docker to apply changes
+          echo "Restarting Docker daemon..."
+          if command -v systemctl &> /dev/null; then
+            $SUDO systemctl restart docker || true
+            sleep 5
+            $SUDO systemctl status docker --no-pager || true
+          else
+            echo "⚠️  systemctl not available, Docker may need manual restart"
+          fi
+          
+          echo "✓ Docker configured for HTTP registry: ${REGISTRY}"
+
+      # Step 7: Login to Registry
       - name: Login to Gitea Registry
         run: |
           echo "${{ secrets.GIT_TOKEN }}" | docker login ${{ secrets.GIT_REGISTRY }} \

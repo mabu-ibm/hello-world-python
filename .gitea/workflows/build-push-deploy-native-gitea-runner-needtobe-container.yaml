@@ -439,7 +439,30 @@ jobs:
           kubectl cluster-info
           echo "✓ kubectl configured and connected"
 
-      # Step 12: Deploy Application
+      # Step 12: Clean Up Existing Resources
+      - name: Clean Up Existing Resources
+        run: |
+          echo "Cleaning up existing resources for fresh deployment..."
+          
+          # Delete existing ingress
+          kubectl delete ingress hello-world-python-ingress -n default --ignore-not-found=true
+          echo "✓ Ingress deleted (if existed)"
+          
+          # Delete existing deployment and service
+          kubectl delete deployment hello-world-python -n default --ignore-not-found=true
+          kubectl delete service hello-world-python -n default --ignore-not-found=true
+          echo "✓ Deployment and service deleted (if existed)"
+          
+          # Delete existing TLS secret (will be recreated)
+          kubectl delete secret hello-world-python-tls -n default --ignore-not-found=true
+          echo "✓ TLS secret deleted (if existed)"
+          
+          # Wait a moment for resources to be fully deleted
+          sleep 5
+          
+          echo "✓ Cleanup complete - ready for fresh deployment"
+
+      # Step 13: Deploy Application
       - name: Deploy Application
         run: |
           # Replace variables in deployment.yaml with actual values from secrets
@@ -451,7 +474,7 @@ jobs:
           kubectl rollout status deployment/hello-world-python -n default --timeout=5m
           echo "✓ Application deployed"
 
-      # Step 13: Create TLS Certificate
+      # Step 14: Create TLS Certificate
       - name: Create TLS Certificate
         run: |
           # Use INGRESS_HOST from secrets (validated in Step 0)
@@ -477,7 +500,7 @@ jobs:
             echo "✓ TLS certificate created for: $INGRESS_HOST"
           fi
 
-      # Step 14: Deploy Flexible Ingress (HTTP + HTTPS)
+      # Step 15: Deploy Flexible Ingress (HTTP + HTTPS)
       - name: Deploy Flexible Ingress
         run: |
           # Use INGRESS_HOST from secrets (validated in Step 0)
@@ -532,7 +555,7 @@ jobs:
           echo "  - HTTP access:  http://${INGRESS_HOST}"
           echo "  - HTTPS access: https://${INGRESS_HOST}"
 
-      # Step 15: Apply Permissive Network Policy
+      # Step 16: Apply Permissive Network Policy
       - name: Apply Permissive Network Policy
         run: |
           cat <<'EOFNETPOL' | kubectl apply -f -
@@ -555,7 +578,7 @@ jobs:
           EOFNETPOL
           echo "✓ Network policy applied"
 
-      # Step 16: Get Deployment Info
+      # Step 17: Get Deployment Info
       - name: Get Deployment Info
         run: |
           # Use INGRESS_HOST from secrets, fallback to default if not set

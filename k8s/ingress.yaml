@@ -15,7 +15,7 @@ metadata:
 spec:
   ingressClassName: traefik  # Change to 'nginx' if using nginx-ingress
   rules:
-  - host: hello-world-python.local  # Change to your domain
+  - host: ${INGRESS_HOST}  # Configurable via INGRESS_HOST variable
     http:
       paths:
       - path: /
@@ -28,7 +28,7 @@ spec:
   # Optional: TLS configuration
   # tls:
   # - hosts:
-  #   - hello-world-python.local
+  #   - ${INGRESS_HOST}
   #   secretName: hello-world-python-tls
 
 # Made with Bob

@@ -11,6 +11,81 @@ jobs:
     env:
       WORKSPACE_DIR: ${{ github.workspace }}
     steps:
+      # Step 0: Validate Required Secrets
+      - name: Validate Required Secrets
+        run: |
+          echo "Validating required Gitea secrets..."
+          MISSING_SECRETS=""
+          
+          # Check required secrets
+          if [ -z "${{ secrets.GIT_REGISTRY }}" ]; then
+            echo "❌ Missing secret: GIT_REGISTRY"
+            MISSING_SECRETS="${MISSING_SECRETS}GIT_REGISTRY "
+          else
+            echo "✓ GIT_REGISTRY is set"
+          fi
+          
+          if [ -z "${{ secrets.GIT_USERNAME }}" ]; then
+            echo "❌ Missing secret: GIT_USERNAME"
+            MISSING_SECRETS="${MISSING_SECRETS}GIT_USERNAME "
+          else
+            echo "✓ GIT_USERNAME is set"
+          fi
+          
+          if [ -z "${{ secrets.GIT_TOKEN }}" ]; then
+            echo "❌ Missing secret: GIT_TOKEN"
+            MISSING_SECRETS="${MISSING_SECRETS}GIT_TOKEN "
+          else
+            echo "✓ GIT_TOKEN is set"
+          fi
+          
+          if [ -z "${{ secrets.KUBECONFIG }}" ]; then
+            echo "❌ Missing secret: KUBECONFIG"
+            MISSING_SECRETS="${MISSING_SECRETS}KUBECONFIG "
+          else
+            echo "✓ KUBECONFIG is set"
+          fi
+          
+          if [ -z "${{ secrets.INGRESS_HOST }}" ]; then
+            echo "❌ Missing secret: INGRESS_HOST"
+            MISSING_SECRETS="${MISSING_SECRETS}INGRESS_HOST "
+          else
+            echo "✓ INGRESS_HOST is set: ${{ secrets.INGRESS_HOST }}"
+          fi
+          
+          # Fail if required secrets are missing
+          if [ -n "$MISSING_SECRETS" ]; then
+            echo ""
+            echo "============================================"
+            echo "❌ WORKFLOW FAILED: Missing Required Secrets"
+            echo "============================================"
+            echo ""
+            echo "Missing secrets: ${MISSING_SECRETS}"
+            echo ""
+            echo "Please add these secrets in Gitea:"
+            echo "  Repository → Settings → Secrets → Actions"
+            echo ""
+            echo "Required secrets:"
+            echo "  - GIT_REGISTRY: Registry URL (e.g., almabuild2.lab.allwaysbeginner.com:5000)"
+            echo "  - GIT_USERNAME: Registry username"
+            echo "  - GIT_TOKEN: Registry password/token"
+            echo "  - KUBECONFIG: Kubernetes config (base64 encoded or plain text)"
+            echo "  - INGRESS_HOST: Hostname for ingress (e.g., hello-world-python.lab.allwaysbeginner.com)"
+            echo ""
+            echo "Example values:"
+            echo "  GIT_REGISTRY=almabuild2.lab.allwaysbeginner.com:5000"
+            echo "  GIT_USERNAME=gitea-user"
+            echo "  GIT_TOKEN=your-gitea-token"
+            echo "  INGRESS_HOST=hello-world-python.lab.allwaysbeginner.com"
+            echo "  KUBECONFIG=<base64-encoded-kubeconfig>"
+            echo ""
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ All required secrets are configured"
+          echo "============================================"
+
       # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
@@ -367,20 +442,29 @@ jobs:
       # Step 12: Deploy Application
       - name: Deploy Application
         run: |
-          kubectl apply -f $WORKSPACE_DIR/k8s/deployment.yaml
+          # Replace variables in deployment.yaml with actual values from secrets
+          sed -e "s|\${IMAGE_REGISTRY}|${{ secrets.GIT_REGISTRY }}|g" \
+              -e "s|\${IMAGE_REPOSITORY}|${{ gitea.repository }}|g" \
+              -e "s|\${IMAGE_TAG}|latest|g" \
+              $WORKSPACE_DIR/k8s/deployment.yaml | kubectl apply -f -
+          
           kubectl rollout status deployment/hello-world-python -n default --timeout=5m
           echo "✓ Application deployed"
 
       # Step 13: Create TLS Certificate
       - name: Create TLS Certificate
         run: |
+          # Use INGRESS_HOST from secrets (validated in Step 0)
+          INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          echo "Creating TLS certificate for: $INGRESS_HOST"
+          
           if kubectl get secret hello-world-python-tls -n default &> /dev/null; then
             echo "✓ TLS secret already exists"
           else
             echo "Creating self-signed TLS certificate..."
             openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
               -keyout $WORKSPACE_DIR/tls.key -out $WORKSPACE_DIR/tls.crt \
-              -subj "/CN=hello-world-python.lab.allwaysbeginner.com/O=IBM Bob Secure Development" \
+              -subj "/CN=${INGRESS_HOST}/O=IBM Bob Secure Development" \
               2>/dev/null
             
             # Create Kubernetes TLS secret
@@ -390,28 +474,49 @@ jobs:
               -n default
             
             rm -f $WORKSPACE_DIR/tls.key $WORKSPACE_DIR/tls.crt
-            echo "✓ TLS certificate created"
+            echo "✓ TLS certificate created for: $INGRESS_HOST"
           fi
 
-      # Step 14: Deploy Secure Ingress
-      - name: Deploy Secure Ingress
+      # Step 14: Deploy Flexible Ingress (HTTP + HTTPS)
+      - name: Deploy Flexible Ingress
         run: |
-          cat <<'EOFINGRESS' | kubectl apply -f -
+          # Use INGRESS_HOST from secrets (validated in Step 0)
+          INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          echo "✓ Deploying ingress for: $INGRESS_HOST"
+          
+          # Deploy flexible ingress that accepts both HTTP and HTTPS
+          cat <<EOFINGRESS | kubectl apply -f -
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
             name: hello-world-python-ingress
             namespace: default
+            labels:
+              app: hello-world-python
             annotations:
-              kubernetes.io/ingress.class: traefik
+              # Accept both HTTP and HTTPS traffic
+              traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+              
+              # Optional TLS - works with or without certificate
               traefik.ingress.kubernetes.io/router.tls: "true"
+              
+              # DO NOT redirect HTTP to HTTPS - allow both
+              # traefik.ingress.kubernetes.io/redirect-entry-point: https  # COMMENTED OUT
+              
+              # Nginx compatibility (if cluster uses nginx instead of traefik)
+              nginx.ingress.kubernetes.io/ssl-redirect: "false"
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+              
+              # Allow insecure backend
+              nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
           spec:
+            # TLS configuration - optional, works without certificate
             tls:
             - hosts:
-              - hello-world-python.lab.allwaysbeginner.com
+              - ${INGRESS_HOST}
               secretName: hello-world-python-tls
             rules:
-            - host: hello-world-python.lab.allwaysbeginner.com
+            - host: ${INGRESS_HOST}
               http:
                 paths:
                 - path: /
@@ -422,7 +527,10 @@ jobs:
                       port:
                         number: 80
           EOFINGRESS
-          echo "✓ Ingress deployed"
+          
+          echo "✓ Flexible ingress deployed for host: $INGRESS_HOST"
+          echo "  - HTTP access:  http://${INGRESS_HOST}"
+          echo "  - HTTPS access: https://${INGRESS_HOST}"
 
       # Step 15: Apply Permissive Network Policy
       - name: Apply Permissive Network Policy
@@ -450,6 +558,15 @@ jobs:
       # Step 16: Get Deployment Info
       - name: Get Deployment Info
         run: |
+          # Use INGRESS_HOST from secrets, fallback to default if not set
+          INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          if [ -z "$INGRESS_HOST" ]; then
+            INGRESS_HOST="hello-world-python.lab.allwaysbeginner.com"
+          fi
+          
+          # Get cluster IP for /etc/hosts
+          CLUSTER_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "<K3S_IP>")
+          
           echo "==================================="
           echo "Deployment Information"
           echo "==================================="
@@ -458,11 +575,31 @@ jobs:
           kubectl get service hello-world-python -n default
           kubectl get ingress hello-world-python-ingress -n default
           echo ""
-          echo "🔒 Secure Access:"
-          echo "  URL: https://hello-world-python.lab.allwaysbeginner.com"
+          echo "🌐 Access URLs (Both HTTP and HTTPS work):"
+          echo "  HTTP:  http://${INGRESS_HOST}"
+          echo "  HTTPS: https://${INGRESS_HOST} (self-signed cert)"
           echo ""
           echo "📋 Add to /etc/hosts on your machine:"
-          echo "  <K3S_IP>  hello-world-python.lab.allwaysbeginner.com"
+          echo "  ${CLUSTER_IP}  ${INGRESS_HOST}"
+          echo ""
+          echo "🧪 Test Commands:"
+          echo "  # HTTP"
+          echo "  curl http://${INGRESS_HOST}"
+          echo ""
+          echo "  # HTTPS (ignore self-signed cert warning)"
+          echo "  curl -k https://${INGRESS_HOST}"
+          echo ""
+          echo "🔑 Gitea Secrets Used:"
+          echo "  - GIT_REGISTRY: ${{ secrets.GIT_REGISTRY }}"
+          echo "  - GIT_USERNAME: ${{ secrets.GIT_USERNAME }}"
+          echo "  - INGRESS_HOST: ${INGRESS_HOST}"
+          echo "  - Image: ${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest"
+          echo ""
+          echo "📝 Ingress Configuration:"
+          echo "  - Type: Flexible (HTTP + HTTPS)"
+          echo "  - HTTP Redirect: Disabled (both protocols work)"
+          echo "  - TLS: Optional (works with or without cert)"
+          echo "  - Compatible: Traefik and Nginx ingress controllers"
           echo "==================================="
 
 # Made with Bob

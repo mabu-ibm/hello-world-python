@@ -15,13 +15,13 @@ spec:
       labels:
         app: hello-world-python
     spec:
-      # Pull image from Gitea registry
+      # Pull image from registry (configurable via IMAGE_REGISTRY variable)
       imagePullSecrets:
       - name: gitea-registry
       
       containers:
       - name: hello-world-python
-        image: almabuild.lab.allwaysbeginner.com:3000/manfred/hello-world-python:latest
+        image: ${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}
         imagePullPolicy: Always
         
         ports:

@@ -102,7 +102,15 @@ jobs:
             PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
           fi
 
-          cat $WORKSPACE_DIR/k8s/deployment.yaml | docker run --rm -i \
+          # Substitute image variables in deployment.yaml
+          export IMAGE_REGISTRY="${{ secrets.GIT_REGISTRY }}"
+          export IMAGE_REPOSITORY="${{ gitea.repository }}"
+          export IMAGE_TAG="latest"
+          
+          echo "Deploying with image: ${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          
+          # Use envsubst to replace variables, then apply
+          envsubst < $WORKSPACE_DIR/k8s/deployment.yaml | docker run --rm -i \
             --entrypoint sh \
             -e KUBECONFIG_DATA="$PLAIN_CONFIG" \
             bitnami/kubectl:latest \
@@ -125,13 +133,21 @@ jobs:
             PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
           fi
 
+          # Set ingress host from secret or use default
+          INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          if [ -z "$INGRESS_HOST" ]; then
+            INGRESS_HOST="hello-world-python.lab.allwaysbeginner.com"
+          fi
+          
+          echo "Using ingress host: $INGRESS_HOST"
+
           if docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get secret hello-world-python-tls -n default' &> /dev/null; then
             echo "✓ TLS secret already exists"
           else
-            echo "Creating self-signed TLS certificate..."
+            echo "Creating self-signed TLS certificate for $INGRESS_HOST..."
             openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
               -keyout tls.key -out tls.crt \
-              -subj "/CN=hello-world-python.lab.allwaysbeginner.com/O=IBM Bob Secure Development" \
+              -subj "/CN=${INGRESS_HOST}/O=IBM Bob Secure Development" \
               2>/dev/null
 
             TLS_CRT=$(base64 -w 0 < tls.crt)
@@ -153,7 +169,7 @@ jobs:
             echo "$MANIFEST" | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
 
             rm -f tls.key tls.crt
-            echo "✓ TLS certificate created using containerized kubectl"
+            echo "✓ TLS certificate created for $INGRESS_HOST using containerized kubectl"
           fi
 
       # Step 11: Deploy Secure Ingress
@@ -165,33 +181,18 @@ jobs:
             PLAIN_CONFIG="${{ secrets.KUBECONFIG }}"
           fi
           
-          cat <<'EOFINGRESS' | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
-              name: hello-world-python-ingress
-              namespace: default
-              annotations:
-                kubernetes.io/ingress.class: traefik
-                traefik.ingress.kubernetes.io/router.tls: "true"
-            spec:
-              tls:
-              - hosts:
-                - hello-world-python.lab.allwaysbeginner.com
-                secretName: hello-world-python-tls
-              rules:
-              - host: hello-world-python.lab.allwaysbeginner.com
-                http:
-                  paths:
-                  - path: /
-                    pathType: Prefix
-                    backend:
-                      service:
-                        name: hello-world-python
-                        port:
-                          number: 80
-          EOFINGRESS
-          echo "✓ Ingress deployed using containerized kubectl"
+          # Set ingress host from secret or use default
+          export INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          if [ -z "$INGRESS_HOST" ]; then
+            export INGRESS_HOST="hello-world-python.lab.allwaysbeginner.com"
+          fi
+          
+          echo "Deploying ingress for host: $INGRESS_HOST"
+          
+          # Use envsubst to replace INGRESS_HOST variable
+          envsubst < $WORKSPACE_DIR/k8s/ingress-secure.yaml | docker run --rm -i --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig apply -f -'
+          
+          echo "✓ Ingress deployed for $INGRESS_HOST using containerized kubectl"
 
       # Step 12: Apply Permissive Network Policy
       - name: Apply Permissive Network Policy
@@ -238,12 +239,18 @@ jobs:
           docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get pods -l app=hello-world-python -n default'
           docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get service hello-world-python -n default'
           docker run --rm --entrypoint sh -e KUBECONFIG_DATA="$PLAIN_CONFIG" bitnami/kubectl:latest -c 'echo "$KUBECONFIG_DATA" > /tmp/kubeconfig && kubectl --kubeconfig=/tmp/kubeconfig get ingress hello-world-python-ingress -n default'
+          # Get ingress host
+          INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
+          if [ -z "$INGRESS_HOST" ]; then
+            INGRESS_HOST="hello-world-python.lab.allwaysbeginner.com"
+          fi
+          
           echo ""
           echo "🔒 Secure Access:"
-          echo "  URL: https://hello-world-python.lab.allwaysbeginner.com"
+          echo "  URL: https://${INGRESS_HOST}"
           echo ""
           echo "📋 Add to /etc/hosts on your machine:"
-          echo "  <K3S_IP>  hello-world-python.lab.allwaysbeginner.com"
+          echo "  <K3S_IP>  ${INGRESS_HOST}"
           echo "==================================="
 
 # Made with Bob

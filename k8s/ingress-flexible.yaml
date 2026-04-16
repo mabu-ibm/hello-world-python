@@ -1,0 +1,77 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-world-python
+  namespace: default
+  labels:
+    app: hello-world-python
+  annotations:
+    # Accept both HTTP and HTTPS traffic
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    
+    # Optional TLS - works with or without certificate
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    
+    # DO NOT redirect HTTP to HTTPS - allow both
+    # traefik.ingress.kubernetes.io/redirect-entry-point: https  # COMMENTED OUT
+    
+    # Optional: Enable TLS passthrough if needed
+    # traefik.ingress.kubernetes.io/router.tls.options: default
+    
+    # Nginx compatibility (if cluster uses nginx instead of traefik)
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    
+    # Allow insecure backend (if app doesn't use TLS internally)
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  # Optional: Specify ingress class (auto-detected if not specified)
+  # ingressClassName: traefik  # or 'nginx' depending on cluster
+  
+  # TLS configuration - optional, works without certificate
+  tls:
+  - hosts:
+    - ${INGRESS_HOST}
+    secretName: hello-world-python-tls  # Will use self-signed if secret doesn't exist
+  
+  rules:
+  # Rule for specified hostname
+  - host: ${INGRESS_HOST}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: hello-world-python
+            port:
+              number: 80
+  
+  # Optional: Catch-all rule for clusters without DNS (access via IP)
+  # Uncomment if you want to access via cluster IP without hostname
+  # - http:
+  #     paths:
+  #     - path: /
+  #       pathType: Prefix
+  #       backend:
+  #         service:
+  #           name: hello-world-python
+  #           port:
+  #             number: 80
+
+---
+# Optional: Security Headers Middleware (Traefik only)
+# Uncomment if you want security headers
+# apiVersion: traefik.containo.us/v1alpha1
+# kind: Middleware
+# metadata:
+#   name: hello-world-security-headers
+#   namespace: default
+# spec:
+#   headers:
+#     customResponseHeaders:
+#       X-Content-Type-Options: "nosniff"
+#       X-Frame-Options: "SAMEORIGIN"
+#       X-XSS-Protection: "1; mode=block"
+
+# Made with Bob

@@ -28,10 +28,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - hello.lab.allwaysbeginner.com
+    - ${INGRESS_HOST}
     secretName: hello-world-python-tls
   rules:
-  - host: hello.lab.allwaysbeginner.com
+  - host: ${INGRESS_HOST}
     http:
       paths:
       - path: /

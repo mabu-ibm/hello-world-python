@@ -381,19 +381,45 @@ jobs:
           $SUDO bash -c "echo '}' >> $DAEMON_JSON" || bash -c "echo '}' >> $DAEMON_JSON"
           
           echo "✓ Docker daemon.json configured"
-          cat "$DAEMON_JSON"
           
-          # Restart Docker to apply changes
-          echo "Restarting Docker daemon..."
-          if command -v systemctl &> /dev/null; then
-            $SUDO systemctl restart docker || true
-            sleep 5
-            $SUDO systemctl status docker --no-pager || true
+          # Display the configuration
+          if [ -f "$DAEMON_JSON" ]; then
+            echo "Configuration content:"
+            $SUDO cat "$DAEMON_JSON" 2>/dev/null || cat "$DAEMON_JSON" 2>/dev/null || echo "Could not read daemon.json"
           else
-            echo "⚠️  systemctl not available, Docker may need manual restart"
+            echo "⚠️  Warning: daemon.json was not created"
           fi
           
-          echo "✓ Docker configured for HTTP registry: ${REGISTRY}"
+          # IMPORTANT: For containerized runners, we need to configure Docker on the HOST
+          # The runner container shares the Docker socket from the host
+          echo ""
+          echo "Note: If running in a container, the host Docker daemon needs this configuration:"
+          echo "  Host file: /etc/docker/daemon.json"
+          echo "  Required content: {\"insecure-registries\": [\"${REGISTRY}\"]}"
+          echo ""
+          echo "To configure the host (run on the runner host machine):"
+          echo "  sudo mkdir -p /etc/docker"
+          echo "  echo '{\"insecure-registries\": [\"${REGISTRY}\"]}' | sudo tee /etc/docker/daemon.json"
+          echo "  sudo systemctl restart docker"
+          echo ""
+          
+          # Try to restart Docker (may not work in container)
+          echo "Attempting to restart Docker daemon..."
+          if command -v systemctl &> /dev/null; then
+            if $SUDO systemctl restart docker 2>/dev/null; then
+              echo "✓ Docker restarted successfully"
+              sleep 5
+              $SUDO systemctl status docker --no-pager || true
+            else
+              echo "⚠️  Could not restart Docker (may be running in container)"
+              echo "   The host Docker daemon must be configured for HTTP registry"
+            fi
+          else
+            echo "⚠️  systemctl not available"
+            echo "   If running in container, configure the host Docker daemon"
+          fi
+          
+          echo "✓ Docker configuration attempted for HTTP registry: ${REGISTRY}"
 
       # Step 7: Login to Registry
       - name: Login to Gitea Registry

@@ -512,22 +512,39 @@ jobs:
           kubectl cluster-info
           echo "✓ kubectl configured and connected"
 
-      # Step 12: Clean Up Existing Resources
+      # Step 12: Create Namespace
+      - name: Create Namespace
+        run: |
+          echo "Creating hello-world-python namespace..."
+          
+          # Create namespace if it doesn't exist
+          if kubectl get namespace hello-world-python &> /dev/null; then
+            echo "✓ Namespace hello-world-python already exists"
+          else
+            kubectl apply -f $WORKSPACE_DIR/k8s/namespace.yaml
+            echo "✓ Namespace hello-world-python created"
+          fi
+          
+          # Verify namespace exists
+          kubectl get namespace hello-world-python
+          echo "✓ Namespace verified"
+
+      # Step 13: Clean Up Existing Resources
       - name: Clean Up Existing Resources
         run: |
           echo "Cleaning up existing resources for fresh deployment..."
           
           # Delete existing ingress
-          kubectl delete ingress hello-world-python-ingress -n default --ignore-not-found=true
+          kubectl delete ingress hello-world-python-ingress -n hello-world-python --ignore-not-found=true
           echo "✓ Ingress deleted (if existed)"
           
           # Delete existing deployment and service
-          kubectl delete deployment hello-world-python -n default --ignore-not-found=true
-          kubectl delete service hello-world-python -n default --ignore-not-found=true
+          kubectl delete deployment hello-world-python -n hello-world-python --ignore-not-found=true
+          kubectl delete service hello-world-python -n hello-world-python --ignore-not-found=true
           echo "✓ Deployment and service deleted (if existed)"
           
           # Delete existing TLS secret (will be recreated)
-          kubectl delete secret hello-world-python-tls -n default --ignore-not-found=true
+          kubectl delete secret hello-world-python-tls -n hello-world-python --ignore-not-found=true
           echo "✓ TLS secret deleted (if existed)"
           
           # Wait a moment for resources to be fully deleted
@@ -535,7 +552,7 @@ jobs:
           
           echo "✓ Cleanup complete - ready for fresh deployment"
 
-      # Step 13: Deploy Application
+      # Step 14: Deploy Application
       - name: Deploy Application
         run: |
           # Replace variables in deployment.yaml with actual values from secrets
@@ -544,17 +561,17 @@ jobs:
               -e "s|\${IMAGE_TAG}|latest|g" \
               $WORKSPACE_DIR/k8s/deployment.yaml | kubectl apply -f -
           
-          kubectl rollout status deployment/hello-world-python -n default --timeout=5m
+          kubectl rollout status deployment/hello-world-python -n hello-world-python --timeout=5m
           echo "✓ Application deployed"
 
-      # Step 14: Create TLS Certificate
+      # Step 15: Create TLS Certificate
       - name: Create TLS Certificate
         run: |
           # Use INGRESS_HOST from secrets (validated in Step 0)
           INGRESS_HOST="${{ secrets.INGRESS_HOST }}"
           echo "Creating TLS certificate for: $INGRESS_HOST"
           
-          if kubectl get secret hello-world-python-tls -n default &> /dev/null; then
+          if kubectl get secret hello-world-python-tls -n hello-world-python &> /dev/null; then
             echo "✓ TLS secret already exists"
           else
             echo "Creating self-signed TLS certificate..."
@@ -567,13 +584,13 @@ jobs:
             kubectl create secret tls hello-world-python-tls \
               --cert=$WORKSPACE_DIR/tls.crt \
               --key=$WORKSPACE_DIR/tls.key \
-              -n default
+              -n hello-world-python
             
             rm -f $WORKSPACE_DIR/tls.key $WORKSPACE_DIR/tls.crt
             echo "✓ TLS certificate created for: $INGRESS_HOST"
           fi
 
-      # Step 15: Deploy Flexible Ingress (HTTP + HTTPS)
+      # Step 16: Deploy Flexible Ingress (HTTP + HTTPS)
       - name: Deploy Flexible Ingress
         run: |
           # Use INGRESS_HOST from secrets (validated in Step 0)
@@ -586,7 +603,7 @@ jobs:
           kind: Ingress
           metadata:
             name: hello-world-python-ingress
-            namespace: default
+            namespace: hello-world-python
             labels:
               app: hello-world-python
             annotations:
@@ -628,7 +645,7 @@ jobs:
           echo "  - HTTP access:  http://${INGRESS_HOST}"
           echo "  - HTTPS access: https://${INGRESS_HOST}"
 
-      # Step 16: Apply Permissive Network Policy
+      # Step 17: Apply Permissive Network Policy
       - name: Apply Permissive Network Policy
         run: |
           cat <<'EOFNETPOL' | kubectl apply -f -
@@ -636,7 +653,7 @@ jobs:
           kind: NetworkPolicy
           metadata:
             name: hello-world-python-netpol
-            namespace: default
+            namespace: hello-world-python
           spec:
             podSelector:
               matchLabels:
@@ -651,7 +668,7 @@ jobs:
           EOFNETPOL
           echo "✓ Network policy applied"
 
-      # Step 17: Get Deployment Info
+      # Step 18: Get Deployment Info
       - name: Get Deployment Info
         run: |
           # Use INGRESS_HOST from secrets, fallback to default if not set
@@ -666,10 +683,12 @@ jobs:
           echo "==================================="
           echo "Deployment Information"
           echo "==================================="
-          kubectl get deployment hello-world-python -n default
-          kubectl get pods -l app=hello-world-python -n default
-          kubectl get service hello-world-python -n default
-          kubectl get ingress hello-world-python-ingress -n default
+          echo "Namespace: hello-world-python"
+          echo ""
+          kubectl get deployment hello-world-python -n hello-world-python
+          kubectl get pods -l app=hello-world-python -n hello-world-python
+          kubectl get service hello-world-python -n hello-world-python
+          kubectl get ingress hello-world-python-ingress -n hello-world-python
           echo ""
           echo "🌐 Access URLs (Both HTTP and HTTPS work):"
           echo "  HTTP:  http://${INGRESS_HOST}"
@@ -691,11 +710,17 @@ jobs:
           echo "  - INGRESS_HOST: ${INGRESS_HOST}"
           echo "  - Image: ${{ secrets.GIT_REGISTRY }}/${{ gitea.repository }}:latest"
           echo ""
-          echo "📝 Ingress Configuration:"
-          echo "  - Type: Flexible (HTTP + HTTPS)"
+          echo "📝 Deployment Configuration:"
+          echo "  - Namespace: hello-world-python (dedicated)"
+          echo "  - Ingress Type: Flexible (HTTP + HTTPS)"
           echo "  - HTTP Redirect: Disabled (both protocols work)"
           echo "  - TLS: Optional (works with or without cert)"
           echo "  - Compatible: Traefik and Nginx ingress controllers"
+          echo ""
+          echo "🔍 Useful Commands:"
+          echo "  kubectl get all -n hello-world-python"
+          echo "  kubectl logs -n hello-world-python -l app=hello-world-python"
+          echo "  kubectl describe pod -n hello-world-python -l app=hello-world-python"
           echo "==================================="
 
 # Made with Bob

@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: hello-world-python
-  namespace: default
+  namespace: hello-world-python
   labels:
     app: hello-world-python
   annotations:
@@ -66,7 +66,7 @@ spec:
 # kind: Middleware
 # metadata:
 #   name: hello-world-security-headers
-#   namespace: default
+#   namespace: hello-world-python
 # spec:
 #   headers:
 #     customResponseHeaders:

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hello-world-python
+  labels:
+    name: hello-world-python
+    app: hello-world-python
+    environment: production
+
+# Made with Bob

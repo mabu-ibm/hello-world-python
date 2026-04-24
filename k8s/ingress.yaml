@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: hello-world-python
-  namespace: apps
+  namespace: hello-world-python
   labels:
     app: hello-world-python
   annotations:

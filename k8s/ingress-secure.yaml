@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: hello-world-python
-  namespace: default
+  namespace: hello-world-python
   labels:
     app: hello-world-python
   annotations:
@@ -48,7 +48,7 @@ apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
 metadata:
   name: security-headers
-  namespace: default
+  namespace: hello-world-python
 spec:
   headers:
     # Security headers
@@ -76,7 +76,7 @@ apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
 metadata:
   name: rate-limit
-  namespace: default
+  namespace: hello-world-python
 spec:
   rateLimit:
     average: 100

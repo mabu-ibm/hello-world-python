@@ -1,0 +1,139 @@
+---
+# Create namespace first
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hello-world-python
+  labels:
+    name: hello-world-python
+    app: hello-world-python
+    environment: production
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world-python
+  namespace: hello-world-python
+  labels:
+    app: hello-world-python
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-world-python
+  template:
+    metadata:
+      labels:
+        app: hello-world-python
+    spec:
+      # Pull image from registry (configurable via IMAGE_REGISTRY variable)
+      imagePullSecrets:
+      - name: gitea-registry
+      
+      containers:
+      - name: hello-world-python
+        image: ${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Liveness probe - checks if app is alive
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - checks if app is ready to serve traffic
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Resource limits
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Environment variables (if needed)
+        env:
+        - name: APP_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world-python
+  namespace: hello-world-python
+  labels:
+    app: hello-world-python
+spec:
+  type: NodePort
+  selector:
+    app: hello-world-python
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    nodePort: 30080
+    protocol: TCP
+  
+  # Session affinity (optional)
+  sessionAffinity: None
+
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-world-python
+  namespace: hello-world-python
+  labels:
+    app: hello-world-python
+  annotations:
+    # Traefik annotations (K3s default)
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Nginx annotations (if using nginx-ingress)
+    # nginx.ingress.kubernetes.io/rewrite-target: /
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: traefik  # Change to 'nginx' if using nginx-ingress
+  rules:
+  - host: ${INGRESS_HOST}  # Configurable via INGRESS_HOST variable
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: hello-world-python
+            port:
+              number: 80
+  # Optional: TLS configuration
+  # tls:
+  # - hosts:
+  #   - ${INGRESS_HOST}
+  #   secretName: hello-world-python-tls
+
+# Made with Bob
